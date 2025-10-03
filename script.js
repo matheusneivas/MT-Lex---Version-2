@@ -71,7 +71,16 @@ function updateUserInterface(isLoggedIn) {
 
 // Abre modal de login
 function openLoginModal() {
+    console.log('🔐 Abrindo modal de login...');
     const modal = document.getElementById('loginModal');
+
+    if (!modal) {
+        console.error('❌ Modal de login não encontrado!');
+        alert('Erro: Modal de login não encontrado. Recarregue a página.');
+        return;
+    }
+
+    console.log('✅ Modal encontrado, abrindo...');
     modal.style.display = 'flex';
     showLoginTab();
 }
@@ -89,6 +98,7 @@ function showLoginTab() {
     document.getElementById('signupTab').classList.remove('active');
     document.getElementById('loginForm').style.display = 'block';
     document.getElementById('signupForm').style.display = 'none';
+    document.getElementById('forgotPasswordForm').style.display = 'none';
     hideAuthMessage();
 }
 
@@ -98,7 +108,54 @@ function showSignupTab() {
     document.getElementById('loginTab').classList.remove('active');
     document.getElementById('signupForm').style.display = 'block';
     document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('forgotPasswordForm').style.display = 'none';
     hideAuthMessage();
+}
+
+// Mostra formulário de recuperação de senha
+function showForgotPasswordForm() {
+    document.getElementById('loginTab').classList.remove('active');
+    document.getElementById('signupTab').classList.remove('active');
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('signupForm').style.display = 'none';
+    document.getElementById('forgotPasswordForm').style.display = 'block';
+    hideAuthMessage();
+}
+
+// Função para recuperar senha
+async function resetPassword() {
+    const email = document.getElementById('forgotEmail').value.trim();
+    const submitBtn = document.getElementById('forgotPasswordSubmitBtn');
+
+    if (!email) {
+        showAuthMessage('Por favor, insira seu e-mail');
+        return;
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = '⏳ Enviando...';
+
+    try {
+        const { error } = await window.supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${window.location.origin}/reset-password`
+        });
+
+        if (error) {
+            throw error;
+        }
+
+        showAuthMessage('✅ E-mail enviado! Verifique sua caixa de entrada.', 'success');
+
+        // Limpa o campo
+        document.getElementById('forgotEmail').value = '';
+
+    } catch (error) {
+        console.error('Erro ao recuperar senha:', error);
+        showAuthMessage(getAuthErrorMessage(error.message));
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '📧 Enviar Link';
+    }
 }
 
 // Limpa formulários de autenticação
@@ -168,12 +225,15 @@ async function loginUser() {
 
 // Função de registro
 async function signupUser() {
+    const name = document.getElementById('signupName').value.trim();
+    const cargo = document.getElementById('signupCargo').value.trim();
+    const telefone = document.getElementById('signupTelefone').value.trim();
     const email = document.getElementById('signupEmail').value.trim();
     const password = document.getElementById('signupPassword').value;
-    const name = document.getElementById('signupName').value.trim();
     const submitBtn = document.getElementById('signupSubmitBtn');
 
-    if (!email || !password || !name) {
+    // Validações
+    if (!name || !cargo || !telefone || !email || !password) {
         showAuthMessage('Por favor, preencha todos os campos');
         return;
     }
@@ -183,31 +243,79 @@ async function signupUser() {
         return;
     }
 
+    // Validação simples de telefone (apenas números)
+    const telefoneNumeros = telefone.replace(/\D/g, '');
+    if (telefoneNumeros.length < 10) {
+        showAuthMessage('Por favor, insira um telefone válido');
+        return;
+    }
+
     submitBtn.disabled = true;
     submitBtn.textContent = '⏳ Criando conta...';
 
     try {
+        // 1. Cria o usuário no Supabase Auth
+        console.log('🔐 Tentando criar usuário no Supabase Auth...');
         const { data, error } = await window.supabase.auth.signUp({
             email: email,
             password: password,
             options: {
                 data: {
-                    full_name: name
-                }
+                    full_name: name,
+                    cargo: cargo,
+                    telefone: telefone
+                },
+                emailRedirectTo: window.location.origin
             }
         });
 
+        console.log('📊 Resposta do Supabase:', { data, error });
+
         if (error) {
+            console.error('❌ Erro detalhado:', error);
             throw error;
         }
 
+        // 2. Se o usuário foi criado, tenta salvar os dados adicionais na tabela de perfis
+        if (data.user) {
+            console.log('✅ Usuário criado:', data.user.id);
+
+            // Aguarda um pouco para garantir que o usuário foi criado
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            try {
+                console.log('💾 Tentando salvar perfil do usuário...');
+                const { data: profileData, error: profileError } = await window.supabase
+                    .from('user_profiles')
+                    .insert([{
+                        user_id: data.user.id,
+                        nome_completo: name,
+                        cargo: cargo,
+                        telefone: telefone,
+                        email: email
+                    }])
+                    .select();
+
+                if (profileError) {
+                    console.error('⚠️ Erro ao salvar perfil:', profileError);
+                    console.log('⚠️ A conta foi criada, mas o perfil não foi salvo. Verifique se a tabela user_profiles existe no Supabase.');
+                } else {
+                    console.log('✅ Perfil salvo com sucesso:', profileData);
+                }
+            } catch (profileError) {
+                console.error('⚠️ Erro ao salvar perfil (catch):', profileError);
+                console.log('⚠️ A conta foi criada, mas o perfil não foi salvo. Isso não impede o login.');
+            }
+        }
+
+        // 3. Mensagens de feedback
         if (data.user && !data.session) {
-            showAuthMessage('Verifique seu e-mail para confirmar a conta!', 'success');
+            showAuthMessage('✅ Conta criada! Verifique seu e-mail para confirmar.', 'success');
         } else if (data.session) {
             currentUser = data.user;
             updateUserInterface(true);
             closeLoginModal();
-            showAuthMessage('Conta criada com sucesso!', 'success');
+            showAuthMessage('✅ Conta criada com sucesso!', 'success');
             await loadUserTemplates();
         }
 
@@ -625,6 +733,21 @@ async function generateThesis() {
             }));
 
             console.log(`✅ topicsData populado com ${topicsData.length} tópicos`);
+
+            // Salva sessão e tópicos no banco de dados
+            const sessionData = await saveSessionToDatabase(inputText, allTopics);
+            if (sessionData) {
+                const savedTopics = await saveTopicsToDatabase(sessionData.id, allTopics);
+                // Vincula os IDs do banco aos tópicos em memória para uso posterior
+                if (savedTopics && savedTopics.length > 0) {
+                    topicsData.forEach((topic, index) => {
+                        if (savedTopics[index]) {
+                            topic.dbId = savedTopics[index].id;
+                            topic.sessionId = sessionData.id;
+                        }
+                    });
+                }
+            }
 
             // Chama as funções de renderização existentes
             renderTopics();
@@ -1370,17 +1493,12 @@ async function developSelectedTopics() {
                 removeDevelopmentLoading(topic.text);
                 displayDevelopment(topic.text, cleanText);
 
-                // Salva o desenvolvimento no banco se o tópico tem dbId
+                // Salva o desenvolvimento no banco usando a nova função
                 if (topic.dbId) {
-                    updateTopicDevelopment(topic.dbId, cleanText)
-                        .then(updatedTopic => {
-                            if (updatedTopic) {
-                                console.log(`✅ Desenvolvimento salvo no banco para "${topic.text}"`);
-                            }
-                        })
-                        .catch(error => {
-                            console.error(`❌ Erro ao salvar desenvolvimento no banco:`, error);
-                        });
+                    const savedDevelopment = await saveDevelopmentToDatabase(topic.dbId, topic.text, cleanText);
+                    if (savedDevelopment) {
+                        console.log(`✅ Desenvolvimento salvo no banco para "${topic.text}"`);
+                    }
                 }
 
             } catch (topicError) {
@@ -1561,6 +1679,12 @@ function saveCustomTemplatesStorage() {
  */
 function populateTemplateSelector() {
     const templateSelector = document.getElementById('templateSelector');
+
+    // Se não existe mais o seletor (foi removido), ignora
+    if (!templateSelector) {
+        console.log('ℹ️ Template selector não encontrado (removido da interface)');
+        return;
+    }
 
     // Limpa as opções existentes (mantém apenas a opção padrão)
     templateSelector.innerHTML = '<option value="" disabled selected>Ou selecione um template...</option>';
@@ -1753,7 +1877,7 @@ function renderTopicsForced() {
 /**
  * Função de teste para simular 20 tópicos (TEMPORÁRIA)
  */
-function processTestTopics(testTopics) {
+async function processTestTopics(testTopics) {
     console.log("🧪 PROCESSANDO TÓPICOS DE TESTE");
     console.log(`📊 Total de tópicos de teste: ${testTopics.length}`);
 
@@ -1786,6 +1910,22 @@ function processTestTopics(testTopics) {
     }));
 
     console.log(`✅ topicsData populado com ${topicsData.length} tópicos`);
+
+    // Salva sessão e tópicos no banco de dados
+    const inputText = document.getElementById('inputText').value.trim();
+    const sessionData = await saveSessionToDatabase(inputText, testTopics);
+    if (sessionData) {
+        const savedTopics = await saveTopicsToDatabase(sessionData.id, testTopics);
+        // Vincula os IDs do banco aos tópicos em memória para uso posterior
+        if (savedTopics && savedTopics.length > 0) {
+            topicsData.forEach((topic, index) => {
+                if (savedTopics[index]) {
+                    topic.dbId = savedTopics[index].id;
+                    topic.sessionId = sessionData.id;
+                }
+            });
+        }
+    }
 
     // Chama as funções de renderização existentes
     renderTopics();
@@ -2090,8 +2230,16 @@ document.addEventListener('DOMContentLoaded', function() {
     const loginSubmitBtn = document.getElementById('loginSubmitBtn');
     const signupSubmitBtn = document.getElementById('signupSubmitBtn');
 
+    console.log('🔍 Verificando botão de login...', loginBtn ? '✅ Encontrado' : '❌ Não encontrado');
+
     if (loginBtn) {
-        loginBtn.addEventListener('click', openLoginModal);
+        console.log('📌 Registrando evento de clique no botão de login');
+        loginBtn.addEventListener('click', function() {
+            console.log('🖱️ Botão de login clicado!');
+            openLoginModal();
+        });
+    } else {
+        console.error('❌ Botão de login não encontrado no DOM');
     }
 
     if (logoutBtn) {
@@ -2104,6 +2252,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (signupSubmitBtn) {
         signupSubmitBtn.addEventListener('click', signupUser);
+    }
+
+    // Event listener para recuperação de senha
+    const forgotPasswordSubmitBtn = document.getElementById('forgotPasswordSubmitBtn');
+    if (forgotPasswordSubmitBtn) {
+        forgotPasswordSubmitBtn.addEventListener('click', resetPassword);
     }
 
     // Event listeners para tópicos
@@ -2211,6 +2365,348 @@ async function logActivity(action, resourceType = null, resourceId = null, detai
         console.error('Erro ao registrar atividade:', error);
     }
 }
+
+/**
+ * FUNÇÕES DO HISTÓRICO
+ */
+
+// Abre a visualização de histórico
+function openHistoryView() {
+    console.log('📜 Abrindo histórico...');
+
+    // Esconde outros containers
+    document.getElementById('mtLexContainer').style.display = 'none';
+    document.getElementById('socialAgentContainer').style.display = 'none';
+
+    // Mostra container de histórico
+    document.getElementById('historyContainer').style.display = 'block';
+
+    // Fecha sidebar em mobile
+    if (window.innerWidth <= 768) {
+        closeSidebar();
+    }
+
+    // Carrega as sessões
+    loadHistory();
+}
+
+// Carrega histórico do banco
+async function loadHistory() {
+    const historyList = document.getElementById('historyList');
+    const historyLoading = document.getElementById('historyLoading');
+    const historyEmpty = document.getElementById('historyEmpty');
+
+    if (!currentUser) {
+        historyList.innerHTML = '';
+        historyEmpty.style.display = 'block';
+        historyEmpty.innerHTML = '<p>🔒 Faça login para ver seu histórico</p>';
+        return;
+    }
+
+    // Mostra loading
+    historyLoading.style.display = 'block';
+    historyList.innerHTML = '';
+    historyEmpty.style.display = 'none';
+
+    try {
+        const sortOrder = document.getElementById('historySort').value;
+        const searchTerm = document.getElementById('historySearch').value.toLowerCase();
+
+        // Busca sessões do usuário com seus tópicos
+        let query = window.supabase
+            .from('sessions')
+            .select(`
+                *,
+                topics (
+                    id,
+                    title,
+                    development_status
+                )
+            `)
+            .eq('user_id', currentUser.id);
+
+        // Ordena
+        if (sortOrder === 'recent') {
+            query = query.order('created_at', { ascending: false });
+        } else {
+            query = query.order('created_at', { ascending: true });
+        }
+
+        const { data: sessions, error } = await query;
+
+        if (error) {
+            console.error('❌ Erro ao carregar histórico:', error);
+            historyLoading.style.display = 'none';
+            historyEmpty.style.display = 'block';
+            historyEmpty.innerHTML = '<p>❌ Erro ao carregar histórico</p>';
+            return;
+        }
+
+        console.log('✅ Sessões carregadas:', sessions);
+
+        // Filtra por busca se houver
+        let filteredSessions = sessions;
+        if (searchTerm) {
+            filteredSessions = sessions.filter(session =>
+                session.original_text?.toLowerCase().includes(searchTerm) ||
+                session.topics?.some(topic => topic.title?.toLowerCase().includes(searchTerm))
+            );
+        }
+
+        historyLoading.style.display = 'none';
+
+        if (filteredSessions.length === 0) {
+            historyEmpty.style.display = 'block';
+            return;
+        }
+
+        // Renderiza as sessões
+        filteredSessions.forEach(session => {
+            const sessionItem = createSessionItem(session);
+            historyList.appendChild(sessionItem);
+        });
+
+    } catch (error) {
+        console.error('❌ Erro ao carregar histórico:', error);
+        historyLoading.style.display = 'none';
+        historyEmpty.style.display = 'block';
+    }
+}
+
+// Cria elemento HTML de uma sessão
+function createSessionItem(session) {
+    const div = document.createElement('div');
+    div.className = 'history-item';
+
+    const date = new Date(session.created_at);
+    const formattedDate = date.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+
+    const topicsCount = session.topics?.length || 0;
+    const developedCount = session.topics?.filter(t => t.development_status === 'completed').length || 0;
+
+    const preview = session.original_text?.substring(0, 150) || 'Sem texto';
+
+    div.innerHTML = `
+        <div class="history-item-header">
+            <div class="history-item-date">📅 ${formattedDate}</div>
+            <div class="history-item-stats">
+                <span class="history-stat">📝 ${topicsCount} tópicos</span>
+                <span class="history-stat">✅ ${developedCount} desenvolvidos</span>
+            </div>
+        </div>
+        <div class="history-item-preview">${preview}${session.original_text?.length > 150 ? '...' : ''}</div>
+        <div class="history-item-actions">
+            <button class="history-view-btn" onclick="viewSession('${session.id}')">👁️ Visualizar</button>
+            <button class="history-restore-btn" onclick="restoreSession('${session.id}')">🔄 Restaurar</button>
+            <button class="history-delete-btn" onclick="deleteSession('${session.id}')">🗑️ Excluir</button>
+        </div>
+    `;
+
+    return div;
+}
+
+// Visualiza uma sessão específica
+async function viewSession(sessionId) {
+    try {
+        const { data: session, error } = await window.supabase
+            .from('sessions')
+            .select(`
+                *,
+                topics (
+                    id,
+                    title,
+                    development_content,
+                    development_status,
+                    position
+                )
+            `)
+            .eq('id', sessionId)
+            .single();
+
+        if (error) {
+            console.error('❌ Erro ao carregar sessão:', error);
+            alert('Erro ao carregar sessão');
+            return;
+        }
+
+        // Abre modal com detalhes da sessão
+        showSessionModal(session);
+
+    } catch (error) {
+        console.error('❌ Erro ao visualizar sessão:', error);
+        alert('Erro ao visualizar sessão');
+    }
+}
+
+// Restaura uma sessão (carrega na MT Lex)
+async function restoreSession(sessionId) {
+    try {
+        const { data: session, error } = await window.supabase
+            .from('sessions')
+            .select(`
+                *,
+                topics (
+                    id,
+                    title,
+                    development_content,
+                    position
+                )
+            `)
+            .eq('id', sessionId)
+            .single();
+
+        if (error) {
+            console.error('❌ Erro ao restaurar sessão:', error);
+            alert('Erro ao restaurar sessão');
+            return;
+        }
+
+        // Volta para MT Lex
+        openMTLexView();
+
+        // Preenche o campo de texto
+        document.getElementById('inputText').value = session.original_text || '';
+
+        // Ordena tópicos por posição
+        const sortedTopics = session.topics.sort((a, b) => (a.position || 0) - (b.position || 0));
+
+        // Restaura os tópicos
+        topicsData = sortedTopics.map((topic, index) => ({
+            id: index + 1,
+            text: topic.title,
+            selected: false,
+            dbId: topic.id
+        }));
+
+        topicIdCounter = topicsData.length;
+
+        // Renderiza os tópicos
+        renderTopics();
+        makeListSortable();
+
+        // Mostra a seção de tópicos
+        document.getElementById('topicsSection').style.display = 'block';
+        document.getElementById('result').style.display = 'block';
+
+        alert('✅ Sessão restaurada com sucesso!');
+
+    } catch (error) {
+        console.error('❌ Erro ao restaurar sessão:', error);
+        alert('Erro ao restaurar sessão');
+    }
+}
+
+// Exclui uma sessão
+async function deleteSession(sessionId) {
+    if (!confirm('Tem certeza que deseja excluir esta sessão? Esta ação não pode ser desfeita.')) {
+        return;
+    }
+
+    try {
+        const { error } = await window.supabase
+            .from('sessions')
+            .delete()
+            .eq('id', sessionId);
+
+        if (error) {
+            console.error('❌ Erro ao excluir sessão:', error);
+            alert('Erro ao excluir sessão');
+            return;
+        }
+
+        alert('✅ Sessão excluída com sucesso!');
+        loadHistory(); // Recarrega a lista
+
+    } catch (error) {
+        console.error('❌ Erro ao excluir sessão:', error);
+        alert('Erro ao excluir sessão');
+    }
+}
+
+// Mostra modal com detalhes da sessão
+function showSessionModal(session) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.display = 'flex';
+
+    const date = new Date(session.created_at);
+    const formattedDate = date.toLocaleString('pt-BR');
+
+    const sortedTopics = session.topics.sort((a, b) => (a.position || 0) - (b.position || 0));
+
+    const topicsHTML = sortedTopics.map(topic => `
+        <div class="session-topic-item">
+            <div class="session-topic-title">
+                ${topic.development_status === 'completed' ? '✅' : '⏸️'} ${topic.title}
+            </div>
+            ${topic.development_content ? `
+                <div class="session-topic-development">
+                    ${topic.development_content.substring(0, 200)}${topic.development_content.length > 200 ? '...' : ''}
+                </div>
+            ` : ''}
+        </div>
+    `).join('');
+
+    modal.innerHTML = `
+        <div class="modal-container" style="max-width: 800px;">
+            <div class="modal-header">
+                <h3 class="modal-title">📄 Detalhes da Sessão</h3>
+                <button class="modal-close-btn" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            </div>
+            <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                <div style="margin-bottom: 20px;">
+                    <strong>📅 Data:</strong> ${formattedDate}
+                </div>
+                <div style="margin-bottom: 20px;">
+                    <strong>📝 Texto Original:</strong>
+                    <div style="background: #2a2a2a; padding: 12px; border-radius: 6px; margin-top: 8px;">
+                        ${session.original_text || 'Sem texto'}
+                    </div>
+                </div>
+                <div>
+                    <strong>📋 Tópicos (${sortedTopics.length}):</strong>
+                    <div style="margin-top: 12px;">
+                        ${topicsHTML || '<p>Nenhum tópico gerado</p>'}
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-cancel-btn" onclick="this.closest('.modal-overlay').remove()">Fechar</button>
+                <button class="modal-save-btn" onclick="restoreSession('${session.id}'); this.closest('.modal-overlay').remove();">🔄 Restaurar</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
+// Event listeners para filtros de histórico
+document.addEventListener('DOMContentLoaded', function() {
+    const historySearch = document.getElementById('historySearch');
+    const historySort = document.getElementById('historySort');
+
+    if (historySearch) {
+        historySearch.addEventListener('input', function() {
+            if (document.getElementById('historyContainer').style.display !== 'none') {
+                loadHistory();
+            }
+        });
+    }
+
+    if (historySort) {
+        historySort.addEventListener('change', function() {
+            if (document.getElementById('historyContainer').style.display !== 'none') {
+                loadHistory();
+            }
+        });
+    }
+});
 
 // Cria uma nova sessão de análise
 async function createSession(originalText, promptUsed = null, webhookResponse = null) {
@@ -2556,23 +3052,787 @@ function closeSidebar() {
     overlay.classList.remove('active');
 }
 
-// Função para selecionar tipo de contrato
-function selectContract(contractType) {
-    console.log('Tipo de contrato selecionado:', contractType);
+// Funções do Agente Social
+let selectedFile = null;
 
-    // Mapeamento de tipos de contrato para nomes amigáveis
-    const contractNames = {
-        'contrato-social': 'Contrato Social',
-        'acordo-socio': 'Acordo de Sócio',
-        'protocolo-familiar': 'Protocolo Familiar'
-    };
+function openMTLexView() {
+    // Esconde outros containers
+    document.getElementById('socialAgentContainer').style.display = 'none';
+    document.getElementById('historyContainer').style.display = 'none';
 
-    // Aqui você pode adicionar a lógica para carregar o contrato
-    // Por enquanto, vamos apenas mostrar uma mensagem
-    alert(`Você selecionou: ${contractNames[contractType]}\n\nEsta funcionalidade será implementada em breve!`);
+    // Mostra o container da MT Lex
+    document.getElementById('mtLexContainer').style.display = 'block';
 
-    // Fecha a sidebar em mobile após seleção
+    // Fecha a sidebar em mobile
     if (window.innerWidth <= 768) {
         closeSidebar();
+    }
+}
+
+function openSocialAgentModal() {
+    // Esconde outros containers
+    document.getElementById('mtLexContainer').style.display = 'none';
+    document.getElementById('historyContainer').style.display = 'none';
+
+    // Mostra o container do Agente Social
+    document.getElementById('socialAgentContainer').style.display = 'block';
+
+    // Limpa os campos
+    selectedFile = null;
+    document.getElementById('pdfUpload').value = '';
+    document.getElementById('instructionsText').value = '';
+    document.getElementById('filePreview').style.display = 'none';
+    document.getElementById('socialAgentResult').style.display = 'none';
+    document.getElementById('sendSocialBtn').disabled = true;
+
+    // Fecha a sidebar em mobile
+    if (window.innerWidth <= 768) {
+        closeSidebar();
+    }
+}
+
+function closeSocialAgentView() {
+    // Esconde o container do Agente Social
+    document.getElementById('socialAgentContainer').style.display = 'none';
+
+    // Mostra o container da MT Lex
+    document.getElementById('mtLexContainer').style.display = 'block';
+}
+
+function handleFileSelect(event) {
+    const file = event.target.files[0];
+
+    if (!file) return;
+
+    // Valida tipo de arquivo
+    if (file.type !== 'application/pdf') {
+        alert('⚠️ Por favor, selecione apenas arquivos PDF');
+        event.target.value = '';
+        return;
+    }
+
+    // Valida tamanho (máximo 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+        alert('⚠️ O arquivo é muito grande. Máximo: 10MB');
+        event.target.value = '';
+        return;
+    }
+
+    selectedFile = file;
+
+    // Mostra o preview do arquivo
+    const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+    document.getElementById('fileName').textContent = file.name;
+    document.getElementById('fileSize').textContent = `${sizeMB} MB`;
+    document.getElementById('filePreview').style.display = 'block';
+    document.getElementById('uploadArea').style.display = 'none';
+
+    // Atualiza o estado do botão de envio
+    updateSendButton();
+}
+
+function removeFile() {
+    selectedFile = null;
+    document.getElementById('pdfUpload').value = '';
+    document.getElementById('filePreview').style.display = 'none';
+    document.getElementById('uploadArea').style.display = 'block';
+    updateSendButton();
+}
+
+function updateSendButton() {
+    const instructionsText = document.getElementById('instructionsText').value.trim();
+    const sendBtn = document.getElementById('sendSocialBtn');
+
+    if (selectedFile && instructionsText.length > 0) {
+        sendBtn.disabled = false;
+    } else {
+        sendBtn.disabled = true;
+    }
+}
+
+// Listener para atualizar botão quando o texto mudar
+document.addEventListener('DOMContentLoaded', function() {
+    const instructionsText = document.getElementById('instructionsText');
+    if (instructionsText) {
+        instructionsText.addEventListener('input', updateSendButton);
+    }
+});
+
+async function sendToSocialAgent() {
+    const instructionsText = document.getElementById('instructionsText').value.trim();
+    const sendBtn = document.getElementById('sendSocialBtn');
+    const resultDiv = document.getElementById('socialAgentResult');
+    const resultMessage = document.getElementById('resultMessage');
+
+    // Validações
+    if (!selectedFile) {
+        alert('⚠️ Por favor, selecione um arquivo PDF');
+        return;
+    }
+
+    if (!instructionsText) {
+        alert('⚠️ Por favor, descreva as alterações desejadas');
+        return;
+    }
+
+    // Desabilita o botão e mostra loading
+    sendBtn.disabled = true;
+    sendBtn.innerHTML = '<span class="btn-icon">⏳</span><span class="btn-text">Enviando...</span>';
+
+    resultDiv.style.display = 'block';
+    resultMessage.innerHTML = '<div class="loading-message"><div class="spinner"></div><p>Enviando documento para análise...</p></div>';
+
+    let analysisId = null;
+
+    try {
+        // Log para debug
+        console.log('📦 Enviando arquivo:');
+        console.log('- Nome do arquivo:', selectedFile.name);
+        console.log('- Tamanho do arquivo:', selectedFile.size, 'bytes');
+        console.log('- Tipo do arquivo:', selectedFile.type);
+        console.log('- Mudanças:', instructionsText);
+
+        // 1. Upload do arquivo para Supabase Storage (opcional, apenas se usuário logado)
+        let fileUrl = null;
+        if (currentUser) {
+            console.log('📤 Fazendo upload do arquivo para Supabase Storage...');
+            resultMessage.innerHTML = '<div class="loading-message"><div class="spinner"></div><p>Fazendo upload do arquivo...</p></div>';
+
+            fileUrl = await uploadPDFToStorage(selectedFile);
+            if (fileUrl) {
+                console.log('✅ Arquivo salvo no storage:', fileUrl);
+            }
+        } else {
+            console.log('⚠️ Usuário não logado - arquivo não será salvo no storage');
+        }
+
+        // 2. Salva no banco de dados (apenas se usuário logado)
+        if (currentUser) {
+            console.log('💾 Salvando análise no banco de dados...');
+            resultMessage.innerHTML = '<div class="loading-message"><div class="spinner"></div><p>Salvando no banco de dados...</p></div>';
+
+            const analysis = await saveSocialAgentAnalysis(
+                selectedFile.name,
+                selectedFile.size,
+                instructionsText,
+                fileUrl
+            );
+            if (analysis) {
+                analysisId = analysis.id;
+                console.log('✅ Análise salva com ID:', analysisId);
+            }
+        } else {
+            console.log('⚠️ Usuário não logado - análise não será salva no banco');
+        }
+
+        // Atualiza mensagem de loading
+        resultMessage.innerHTML = '<div class="loading-message"><div class="spinner"></div><p>Enviando para análise do Agente Social...</p></div>';
+
+        // 3. Prepara o FormData com o arquivo binário
+        const formData = new FormData();
+        formData.append('file', selectedFile, selectedFile.name);
+        formData.append('mudancas', instructionsText);
+        formData.append('filesize', selectedFile.size);
+        formData.append('timestamp', new Date().toISOString());
+        if (analysisId) {
+            formData.append('analysis_id', analysisId);
+        }
+
+        // 4. Envia para o webhook do n8n com FormData (binary)
+        console.log('🚀 Enviando para webhook do n8n...');
+        const response = await fetch('https://n8n-n8n.ut3ql0.easypanel.host/webhook/recebe', {
+            method: 'POST',
+            body: formData
+            // Não definir Content-Type - o navegador define automaticamente com boundary
+        });
+
+        if (!response.ok) {
+            throw new Error(`Erro HTTP: ${response.status}`);
+        }
+
+        let responseData = await response.text();
+        console.log('📨 Resposta bruta do webhook:', responseData);
+
+        // Processa a resposta
+        let processedResponse = '';
+        try {
+            // Tenta fazer parse como JSON
+            const jsonResponse = JSON.parse(responseData);
+
+            // Se vier com campo "output", extrai ele
+            if (jsonResponse.output) {
+                processedResponse = jsonResponse.output;
+            } else if (typeof jsonResponse === 'string') {
+                processedResponse = jsonResponse;
+            } else {
+                // Se for objeto, converte para string formatada
+                processedResponse = JSON.stringify(jsonResponse, null, 2);
+            }
+        } catch (e) {
+            // Se não for JSON, usa o texto diretamente
+            processedResponse = responseData;
+        }
+
+        // Remove caracteres de escape e formata o texto
+        processedResponse = processedResponse
+            .replace(/\\n/g, '\n')           // Substitui \n por quebra de linha real
+            .replace(/\\"/g, '"')            // Substitui \" por aspas normais
+            .replace(/\\\\/g, '\\')          // Substitui \\ por barra simples
+            .replace(/\\t/g, '    ')         // Substitui \t por espaços
+            .trim();                         // Remove espaços extras no início/fim
+
+        console.log('✅ Resposta processada:', processedResponse);
+
+        // 5. Atualiza o banco com a resposta (apenas se usuário logado e tem analysisId)
+        if (currentUser && analysisId) {
+            console.log('💾 Salvando resposta no banco de dados...');
+            await updateSocialAgentResponse(analysisId, processedResponse);
+        }
+
+        // Converte quebras de linha para HTML
+        const formattedResponse = processedResponse.replace(/\n/g, '<br>');
+
+        // Aviso se não está logado
+        const loginWarning = !currentUser ? `
+            <div class="info-banner" style="background: #1e40af; padding: 12px; border-radius: 6px; margin-bottom: 16px; text-align: center;">
+                ℹ️ <strong>Você não está logado.</strong> Esta análise não foi salva no histórico.
+                <a href="#" onclick="openLoginModal(); return false;" style="color: #93c5fd; text-decoration: underline;">Faça login</a> para salvar suas análises.
+            </div>
+        ` : '';
+
+        // Sucesso
+        resultMessage.innerHTML = `
+            <div class="success-message">
+                <div class="success-icon">✅</div>
+                <h4>Análise Concluída!</h4>
+                ${loginWarning}
+                <p>Veja abaixo as alterações sugeridas pelo Agente Social:</p>
+                ${formattedResponse ? `
+                    <div class="response-content">
+                        <button class="copy-response-btn" onclick="copyResponseText()">
+                            📋 Copiar Resposta
+                        </button>
+                        <div id="agentResponseText">${formattedResponse}</div>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+
+    } catch (error) {
+        console.error('Erro ao enviar documento:', error);
+        resultMessage.innerHTML = `
+            <div class="error-message">
+                <div class="error-icon">❌</div>
+                <h4>Erro ao enviar documento</h4>
+                <p>${error.message}</p>
+            </div>
+        `;
+    } finally {
+        // Reabilita o botão
+        sendBtn.disabled = false;
+        sendBtn.innerHTML = '<span class="btn-icon">🚀</span><span class="btn-text">Enviar para Análise</span>';
+    }
+}
+
+// Função auxiliar para converter arquivo para base64
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => {
+            // Remove o prefixo "data:application/pdf;base64,"
+            const base64 = reader.result.split(',')[1];
+            resolve(base64);
+        };
+        reader.onerror = error => reject(error);
+    });
+}
+
+/**
+ * FUNÇÕES DE SALVAMENTO AUTOMÁTICO NO BANCO
+ */
+
+// Salva uma nova sessão (conversa)
+async function saveSessionToDatabase(inputText, topics) {
+    console.log('🔍 saveSessionToDatabase chamada!', { currentUser, topicsLength: topics.length });
+
+    if (!currentUser) {
+        console.log('⚠️ Usuário não logado - sessão não será salva');
+        return null;
+    }
+
+    try {
+        console.log('💾 Tentando inserir na tabela sessions...');
+        const { data, error } = await window.supabase
+            .from('sessions')
+            .insert([{
+                user_id: currentUser.id,
+                original_text: inputText,
+                prompt_used: inputText,
+                created_at: new Date().toISOString()
+            }])
+            .select()
+            .single();
+
+        if (error) {
+            console.error('❌ Erro ao salvar sessão:', error);
+            console.error('Detalhes do erro:', JSON.stringify(error, null, 2));
+            return null;
+        }
+
+        console.log('✅ Sessão salva com sucesso! ID:', data.id);
+        return data;
+
+    } catch (error) {
+        console.error('❌ Erro ao salvar sessão:', error);
+        return null;
+    }
+}
+
+// Salva tópicos gerados
+async function saveTopicsToDatabase(sessionId, topics) {
+    if (!currentUser || !sessionId) {
+        console.log('⚠️ Não é possível salvar tópicos sem usuário ou sessão');
+        return;
+    }
+
+    try {
+        const topicsToInsert = topics.map((topic, index) => ({
+            session_id: sessionId,
+            user_id: currentUser.id,
+            title: topic.topico || topic.text || '',
+            content: null,
+            position: index + 1,
+            is_selected: false,
+            development_status: 'pending'
+        }));
+
+        console.log('💾 Tentando salvar tópicos:', topicsToInsert[0]);
+        const { data, error } = await window.supabase
+            .from('topics')
+            .insert(topicsToInsert)
+            .select();
+
+        if (error) {
+            console.error('❌ Erro ao salvar tópicos:', error);
+            console.error('Detalhes do erro:', JSON.stringify(error, null, 2));
+            return null;
+        }
+
+        console.log(`✅ ${data.length} tópicos salvos`);
+        return data;
+
+    } catch (error) {
+        console.error('❌ Erro ao salvar tópicos:', error);
+        return null;
+    }
+}
+
+// Salva análise de tópico desenvolvido
+async function saveDevelopmentToDatabase(topicId, topicText, analysis) {
+    if (!currentUser) {
+        console.log('⚠️ Usuário não logado - análise não será salva');
+        return null;
+    }
+
+    try {
+        // Atualiza o tópico com o desenvolvimento ao invés de criar análise separada
+        const { data, error } = await window.supabase
+            .from('topics')
+            .update({
+                development_content: analysis,
+                development_status: 'completed',
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', topicId)
+            .select()
+            .single();
+
+        if (error) {
+            console.error('❌ Erro ao salvar análise:', error);
+            console.error('Detalhes do erro:', JSON.stringify(error, null, 2));
+            return null;
+        }
+
+        console.log('✅ Desenvolvimento salvo no tópico:', data);
+        return data;
+
+    } catch (error) {
+        console.error('❌ Erro ao salvar análise:', error);
+        return null;
+    }
+}
+
+/**
+ * FUNÇÕES DO SUPABASE PARA AGENTE SOCIAL
+ */
+
+// Salva uma nova análise do Agente Social no banco
+async function saveSocialAgentAnalysis(filename, filesize, mudancas, fileUrl = null) {
+    if (!currentUser) {
+        console.log('❌ Usuário não logado');
+        return null;
+    }
+
+    try {
+        const { data, error } = await window.supabase
+            .from('social_agent_analyses')
+            .insert([{
+                user_id: currentUser.id,
+                filename: filename,
+                filesize: filesize,
+                mudancas: mudancas,
+                file_url: fileUrl,
+                response_status: 'processing'
+            }])
+            .select()
+            .single();
+
+        if (error) {
+            console.error('❌ Erro ao salvar análise do Agente Social:', error);
+            return null;
+        }
+
+        console.log('✅ Análise do Agente Social salva:', data);
+        await logActivity('social_agent_analysis_created', 'social_agent_analysis', data.id, {
+            filename: filename,
+            filesize: filesize
+        });
+
+        return data;
+
+    } catch (error) {
+        console.error('❌ Erro ao salvar análise:', error);
+        return null;
+    }
+}
+
+// Atualiza a resposta da IA para uma análise
+async function updateSocialAgentResponse(analysisId, aiResponse) {
+    if (!currentUser || !analysisId) {
+        return null;
+    }
+
+    try {
+        const { data, error } = await window.supabase
+            .from('social_agent_analyses')
+            .update({
+                ai_response: aiResponse,
+                response_status: 'completed',
+                processed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', analysisId)
+            .select()
+            .single();
+
+        if (error) {
+            console.error('❌ Erro ao atualizar resposta:', error);
+            return null;
+        }
+
+        console.log('✅ Resposta atualizada:', data);
+        await logActivity('social_agent_response_received', 'social_agent_analysis', analysisId);
+
+        return data;
+
+    } catch (error) {
+        console.error('❌ Erro ao atualizar resposta:', error);
+        return null;
+    }
+}
+
+// Carrega histórico de análises do Agente Social
+async function loadSocialAgentHistory(limit = 20) {
+    if (!currentUser) {
+        return [];
+    }
+
+    try {
+        const { data, error } = await window.supabase
+            .from('social_agent_analyses')
+            .select('*')
+            .eq('user_id', currentUser.id)
+            .order('created_at', { ascending: false })
+            .limit(limit);
+
+        if (error) {
+            console.error('❌ Erro ao carregar histórico:', error);
+            return [];
+        }
+
+        console.log('✅ Histórico carregado:', data);
+        return data;
+
+    } catch (error) {
+        console.error('❌ Erro ao carregar histórico:', error);
+        return [];
+    }
+}
+
+// Upload de arquivo PDF para o Supabase Storage
+async function uploadPDFToStorage(file) {
+    if (!currentUser) {
+        console.log('❌ Usuário não logado');
+        return null;
+    }
+
+    try {
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${currentUser.id}/${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+
+        const { data, error } = await window.supabase.storage
+            .from('social-agent-documents')
+            .upload(fileName, file, {
+                cacheControl: '3600',
+                upsert: false
+            });
+
+        if (error) {
+            console.error('❌ Erro ao fazer upload:', error);
+            return null;
+        }
+
+        // Gera URL pública
+        const { data: urlData } = window.supabase.storage
+            .from('social-agent-documents')
+            .getPublicUrl(fileName);
+
+        console.log('✅ Upload concluído:', urlData.publicUrl);
+        return urlData.publicUrl;
+
+    } catch (error) {
+        console.error('❌ Erro no upload:', error);
+        return null;
+    }
+}
+
+/**
+ * FUNÇÕES DO MODAL DE TEMPLATES
+ */
+
+// Abre o modal de templates
+function openTemplatesModal() {
+    const modal = document.getElementById('templatesModal');
+    const templatesList = document.getElementById('templatesList');
+
+    // Carrega os templates
+    loadTemplatesIntoModal();
+
+    // Mostra o modal
+    modal.style.display = 'flex';
+}
+
+// Fecha o modal de templates
+function closeTemplatesModal() {
+    const modal = document.getElementById('templatesModal');
+    modal.style.display = 'none';
+}
+
+// Carrega os templates no modal
+async function loadTemplatesIntoModal() {
+    const templatesList = document.getElementById('templatesList');
+    templatesList.innerHTML = '';
+
+    let hasTemplates = false;
+
+    // 1. Templates pré-definidos
+    if (contractTemplates && Object.keys(contractTemplates).length > 0) {
+        Object.keys(contractTemplates).forEach(key => {
+            hasTemplates = true;
+            const item = document.createElement('div');
+            item.className = 'template-item';
+            item.onclick = () => selectTemplateFromModal('predefined:' + key, key);
+            item.innerHTML = `
+                <span class="template-item-name">${key}</span>
+                <span class="template-item-icon">📄</span>
+            `;
+            templatesList.appendChild(item);
+        });
+    }
+
+    // 2. Templates customizados locais
+    if (customTemplates && Object.keys(customTemplates).length > 0) {
+        Object.keys(customTemplates).forEach(key => {
+            hasTemplates = true;
+            const item = document.createElement('div');
+            item.className = 'template-item custom';
+            item.onclick = () => selectTemplateFromModal('custom:' + key, key);
+            item.innerHTML = `
+                <span class="template-item-name">${key}</span>
+                <span class="template-item-icon">⭐</span>
+            `;
+            templatesList.appendChild(item);
+        });
+    }
+
+    // 3. Templates do Supabase (se usuário logado)
+    if (currentUser) {
+        try {
+            const { data, error } = await window.supabase
+                .from('templates')
+                .select('*')
+                .eq('user_id', currentUser.id)
+                .order('created_at', { ascending: false });
+
+            if (!error && data && data.length > 0) {
+                data.forEach(template => {
+                    hasTemplates = true;
+                    const item = document.createElement('div');
+                    item.className = 'template-item custom';
+                    item.onclick = () => selectTemplateFromModal('supabase:' + template.id, template.nome, template.topicos);
+                    item.innerHTML = `
+                        <span class="template-item-name">${template.nome}</span>
+                        <span class="template-item-icon">☁️</span>
+                    `;
+                    templatesList.appendChild(item);
+                });
+            }
+        } catch (error) {
+            console.error('Erro ao carregar templates do Supabase:', error);
+        }
+    }
+
+    // Se não há templates, mostra mensagem
+    if (!hasTemplates) {
+        templatesList.innerHTML = `
+            <div class="templates-empty">
+                <div class="templates-empty-icon">📋</div>
+                <p>Nenhum template disponível</p>
+                <p style="font-size: 13px;">Crie seu primeiro template!</p>
+            </div>
+        `;
+    }
+}
+
+// Seleciona um template do modal
+function selectTemplateFromModal(templateValue, templateName, templateTopics = null) {
+    console.log('Template selecionado:', templateName);
+
+    let topics = null;
+
+    // Identifica o tipo de template
+    if (templateValue.startsWith('predefined:')) {
+        const key = templateValue.replace('predefined:', '');
+        topics = contractTemplates[key];
+    } else if (templateValue.startsWith('custom:')) {
+        const key = templateValue.replace('custom:', '');
+        topics = customTemplates[key];
+    } else if (templateValue.startsWith('supabase:')) {
+        topics = templateTopics;
+    }
+
+    if (!topics || topics.length === 0) {
+        alert('❌ Erro ao carregar template');
+        return;
+    }
+
+    // Limpa os tópicos atuais
+    topicsList = [];
+
+    // Adiciona os tópicos do template
+    topics.forEach(topic => {
+        topicsList.push({
+            text: topic,
+            isCompleted: false
+        });
+    });
+
+    // Atualiza a interface
+    renderTopics();
+    updateProgress();
+
+    // Fecha o modal
+    closeTemplatesModal();
+
+    // Mostra feedback
+    showToast(`✅ Template "${templateName}" carregado com sucesso!`);
+}
+
+// Função auxiliar para mostrar toast
+function showToast(message) {
+    // Remove toast anterior se existir
+    const existingToast = document.querySelector('.toast-notification');
+    if (existingToast) {
+        existingToast.remove();
+    }
+
+    // Cria novo toast
+    const toast = document.createElement('div');
+    toast.className = 'toast-notification';
+    toast.textContent = message;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #10a37f;
+        color: white;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        z-index: 3000;
+        animation: slideUp 0.3s ease;
+    `;
+
+    document.body.appendChild(toast);
+
+    // Remove após 3 segundos
+    setTimeout(() => {
+        toast.style.animation = 'slideDown 0.3s ease';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// Fechar modal ao clicar fora
+document.addEventListener('click', function(e) {
+    const modal = document.getElementById('templatesModal');
+    if (modal && e.target === modal) {
+        closeTemplatesModal();
+    }
+});
+
+// Função para copiar a resposta do Agente Social
+async function copyResponseText() {
+    const responseDiv = document.getElementById('agentResponseText');
+    if (!responseDiv) return;
+
+    // Pega o texto sem as tags HTML
+    const text = responseDiv.innerText || responseDiv.textContent;
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            // Fallback para navegadores mais antigos
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            textArea.style.top = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            document.execCommand('copy');
+            textArea.remove();
+        }
+
+        // Feedback visual
+        const btn = event.target.closest('.copy-response-btn');
+        if (btn) {
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '✅ Copiado!';
+            btn.style.background = '#10a37f';
+
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.style.background = '';
+            }, 2000);
+        }
+    } catch (error) {
+        console.error('Erro ao copiar:', error);
+        alert('Não foi possível copiar o texto');
     }
 }
